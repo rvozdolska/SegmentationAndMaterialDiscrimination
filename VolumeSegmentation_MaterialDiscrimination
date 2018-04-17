@@ -1,0 +1,244 @@
+library(randomForest)
+library(cluster)
+library(plyr)
+library(gam)
+library(plot3D)
+library(kohonen)
+library(plyr)
+library("RColorBrewer")
+library(e1071)
+library(proxy)
+library(plotly)
+library(kohonen)
+library(mclust)
+library(rpart)
+
+data = read.csv('/storage/opt/dsc/dse/hmt_apg/release/cttso/output/tagging_bs_15cm/output/run/91/600/0004/ContrabandFeatures_0_1_180.csv')
+sdata=data[data$object_names !='',]
+cutoff = quantile(data$box_p95, probs = seq(0,1,0.05))
+sdata = sdata[sdata$box_p95 > cutoff['70%'], ]
+listofMaterials = c('ClutterA','ANFO','ClutterC','AN','Sugar', 'ClutterB','PCFO')
+names(sdata)[0:13]
+materialsPresent = intersect(names(sdata), listofMaterials)
+
+if(length(materialsPresent)>1){
+sdata$AirorNot = apply(sdata[,materialsPresent], 1, function(x)(all(x) || all(!x)))
+sdata$Materials = ifelse(sdata$AirorNot, 4, apply(sdata[,materialsPresent],1,which.max))
+} else {
+sdata$AirorNot = round(sdata[,materialsPresent],0)
+sdata$Materials = round(sdata[,materialsPresent],0)
+}
+                       
+variablesforModeling = c("box_mean", "box_p25", "box_p50", "box_p75" , "box_p95", "box_std", "dist_1_2", "dist_1_3", "dist_2_3", "n_1sigma", "n_2sigma" , "n_3sigma", "sum_max_1_2", "sum_max_1_3", "sum_max_1_5", "sum_max_2_2", "sum_max_2_3", "sum_max_2_5", "sum_max_3_2", "sum_max_3_3", "sum_max_3_5" , "value_max_1", "value_max_2", "value_max_3",  "SmoothedNumPoCAs", "LogPTheta", "LogPThetaSquared", "GeoMeanPThetaSquared", "Sigma", "MeanTheta", "GeoMeanTheta", "NumTracks", "Mu", "PoCARate", "MeanDoCA", "GeoMeanFractionalScattering" , "MeanFractionalScattering" , "ScatteringRatio", "FracMu", "FracSigma", "FOMFrac", "FOM", "MikesFOM", "PoCAScat", "PoCALogScat", "NumStoppedTracks", "StoppedMean", "StoppedMeanP", "StoppedFracP", "StoppedThroughRatio","x_max_1", "x_max_2", "x_max_3", "y_max_1", "y_max_2", "y_max_3", "z_max_1", "z_max_2", "z_max_3")
+
+#variablesforModeling = c('box_mean', 'box_p25','box_p50','box_p75','box_p95','box_std','value_max_1', 'value_max_2', 'value_max_3', 'GeoMeanFractionalScattering', 'GeoMeanPThetaSquared', 'SmoothedNumPoCAs', 'StoppedMean','StoppedThroughRatio')
+
+                       
+p1 <- plot_ly(sdata, x = ~x, y = ~y, z = ~z, color = ~Materials, colors = c('blue','yellow','green', 'red', 'grey','orange','black', 'purple', 'skyblue','pink','darkblue', 'aquamarine', 'cornflowerblue')[1:length(materialsPresent)]) %>% add_markers()%>%layout(title='Run 91 Actual ')
+p1
+              
+########################## 
+# https://www.r-bloggers.com/self-organising-maps-for-customer-segmentation-using-r/
+
+# Load Air model when first loading env
+# load("modelairRFSmaller.RData")
+air <- predict(modelairRF, sdata[,variablesforModeling])
+#air1 <- ifelse(air[,1]>0.30,1,0)
+table(air, as.numeric(sdata$AirorNot))
+sdata$NotAir <- air
+sdataNAM <- subset(sdata, NotAir == 0)
+sdataNAM <- sdataNAM[,-60]
+
+data_train <- sdataNAM[,variablesforModeling]
+#add euclidean distances between all points
+test <- as.matrix(dist(sdataNAM[,c('x','y','z')], diag=T, method='manhattan'))
+
+data_train_matrix <- as.matrix((data_train))
+data_train_matrix1 <- cbind(data_train_matrix, test)
+
+som_grid <- somgrid(xdim = 4, ydim=8, topo=c("hexagonal"), neighbourhood.fct = c("gaussian"))
+som_model <- supersom(data_train_matrix1, 
+		grid=som_grid, 
+		rlen=60, 
+		alpha=c(0.7,0.001), 
+                radius = 0.1,
+                dist.fcts = c("euclidean"),
+		keep.data = TRUE)
+sdataNAM$som_codes = som_model$unit.classif
+sdataNA <-sdataNAM
+    
+## loop over all codes and remove rows that are far away from others - do it on vars first
+## only for som_codes with mode than 2 rows  - medoid version                     
+excluded = c()
+for (i in unique(sdataNA$som_codes)){
+   dataP <- sdataNA[sdataNA$som_codes==i,c('x','y','z')]
+   cutoff.distance= quantile(test1, probs = seq(0,1,0.05))
+   if(length(dataP$x)>1) { medoid <- pam(dataP, 1)$medoids
+      x = (test1[,rownames(medoid)]<cutoff.distance['70%'])
+      excluded = c(excluded,names(which(!x))) 
+      } else {
+      excluded = c(excluded,rownames(dataP))
+      } 
+}
+
+## alternatively, keep the middle of x, y, z
+lower= '10%'
+upper = '90%'                       
+excluded = c()
+for (i in unique(sdataNA$som_codes)){
+   dataP <- sdataNA[sdataNA$som_codes==i,c('x','y','z')]
+   cutoff.x = quantile(dataP$x, probs = seq(0,1,0.05))
+   cutoff.y = quantile(dataP$y, probs = seq(0,1,0.05))                    
+   cutoff.z = quantile(dataP$z, probs = seq(0,1,0.05))
+   excluded1 = rownames(dataP[(dataP$x<cutoff.x[lower] | dataP$x>cutoff.x[upper]) | (dataP$y<cutoff.y[lower] | dataP$y>cutoff.y[upper]) | (dataP$z<cutoff.z[lower] | dataP$z>cutoff.z[upper]),])
+   excluded = c(excluded,excluded1)
+}    
+                       
+## exclude the rownumbers for outliers
+sdataNA <-sdataNAM[!rownames(sdataNAM) %in% excluded,]    
+    
+t = table(sdataNA$som_codes, sdataNA$Materials)
+t1 <- as.data.frame.matrix(t)
+names(t1) <- paste('mat',names(t1),sep='')                       
+t1$seq <- seq(1,length(t1[,1]))
+t1$som_codes <- rownames(t1)
+
+## aggregate
+noisetosignal <- function(y, flag){
+     if (flag=='sdmed') {x1 = sd(y)/mean(y)}
+     #x1 = median(y)/sd(y)
+     #x2 = median(y)
+     #x2 = sd(y)
+     if (flag=='q75sd') {x1 = quantile(as.matrix(y), probs = seq(0,1,0.05))['75%']/sd(y)}
+     #x1 = quantile(as.matrix(y), probs = seq(0,1,0.05))['75%']
+     x1 = ifelse(is.na(x1),0,x1)
+     x1 = ifelse(is.nan(x1),0,x1)
+     x1
+    }
+                       
+                       
+summary.by.som_code1 <- aggregate(x = sdataNA[,c(variablesforModeling)], 
+                               by = list(mean.values = sdataNA$som_codes), 
+                               FUN = function(x) noisetosignal(x,'sdmed'), 
+                               simplify = TRUE )
+summary.by.som_code2 <- aggregate(x = sdataNA[,c(variablesforModeling)], 
+                               by = list(mean.values = sdataNA$som_codes), 
+                               FUN = function(x) noisetosignal(x,'q75sd'), 
+                               simplify = TRUE )                       
+summary.by.som_code <- merge(summary.by.som_code1, summary.by.som_code2, by.x = 'mean.values', by.y = 'mean.values')
+                       
+summary.by.som_code.xyz <- aggregate(x = sdataNA[,c('x','y','z')], 
+                               by = list(mean.values = sdataNA$som_codes), 
+                               FUN = median)  
+                       
+try1 = merge(summary.by.som_code, summary.by.som_code.xyz, by.x = 'mean.values',by.y='mean.values')
+summary.by.som_code = try1                       
+
+## some interactions 
+summary.by.som_code$FOM.FOMFrac = summary.by.som_code$FOM.x/(summary.by.som_code$FOMFrac.x +0.1)
+summary.by.som_code$SmoothedNumPoCAs.box_p50 = summary.by.som_code$SmoothedNumPoCAs.x/(summary.by.som_code$box_p50.x +0.1)
+summary.by.som_code$MeanTheta.ScatteringRatio = summary.by.som_code$MeanTheta.x/(summary.by.som_code$ScatteringRatio.x +0.1)
+summary.by.som_code$MuL = log(summary.by.som_code$LogPTheta.x*summary.by.som_code$Mu.x)  
+summary.by.som_code$MuL1 = ((summary.by.som_code$sum_max_1_2.x)*(summary.by.som_code$sum_max_3_5.x))
+summary.by.som_code$Pos = (summary.by.som_code$StoppedMean.x*summary.by.som_code$sum_max_1_2.x)
+
+rFImp <- randomForest(as.factor(mean.values) ~ . , data=summary.by.som_code, importance=TRUE, nodesize=10, maxnodes=2)
+varsPred1 = data.frame(rFImp$importance)
+varsPred2 = order(varsPred1$MeanDecreaseGini, decreasing = TRUE)
+varsPred = names(summary.by.som_code)[varsPred2[1:20]]
+                       
+varsforClustering <- varsPred#c('MuL1','box_mean.x',"SmoothedNumPoCAs.box_p50", "Pos","StoppedThroughRatio") 
+clustering.dataset <- dist(summary.by.som_code[,varsforClustering], method='manhattan')
+cutoff = quantile(as.matrix(clustering.dataset), probs = seq(0,1,0.01))
+
+res.cluster <- dbscan(clustering.dataset, eps = cutoff['20%'], minPts=2)
+t1$cluster <- res.cluster$cluster
+
+t2 <- aggregate(x = t1[,1:3], 
+               by = list(mean.values = t1$cluster), 
+               FUN = sum)
+t2
+                       
+sdataNA1 <- merge(sdataNA, t1, by.x='som_codes',by.y='som_codes')
+
+run.dist = t2
+                       
+### goodness of fit measure
+row.col.perc <- function(x){
+     x/sum(x)                       
+}
+
+m.row<- t(apply(run.dist,1, row.col.perc))
+m.col<- apply(run.dist,2, row.col.perc)
+
+max.col <- apply(m.col,2, max)
+max.row <- apply(m.row,1, max) 
+
+min(max.col)*min(max.row) 
+run.dist$mat <- apply(run.dist,1,which.max)                       
+unique(run.dist$mat)
+max.col 
+
+                       
+
+##################
+## Curating the database for analysis with both t-SNE and PCA
+library(Rtsne)
+
+#, 'FOMFrac', 'GeoMeanFractionalScattering', 'SmoothedNumPoCAs', 'box_p50', 'box_p75', 'Mu', "box_std", "GeoMeanFractionalScattering", "x_max_1", "FracSigma", "LogPThetaSquared","sum_max_1_2", "sum_max_1_3", "sum_max_1_5", "sum_max_2_2", "sum_max_2_3", "sum_max_2_5", "sum_max_3_2", "sum_max_3_3", "sum_max_3_5" , "value_max_1", "value_max_2", "value_max_3", "MeanTheta", "GeoMeanTheta", "ScatteringRatio",  "NumStoppedTracks", "StoppedFracP"
+                       
+varsforClustering <- c('FOMFrac') 
+                      
+## for plotting
+colors = rainbow(length(unique(summary.by.som_code$mean.values)))
+names(colors) = unique(summary.by.som_code$mean.values)
+
+## Executing the algorithm 
+tsne <- Rtsne(summary.by.som_code[,varsforClustering], dims = 2, perplexity=10, verbose=TRUE, max_iter = 100)
+
+## Plotting
+plot(tsne$Y,main="tsne", t='n')
+text(tsne$Y, labels=summary.by.som_code$mean.values, col=colors[summary.by.som_code$mean.values])                       
+
+#### get air back for better plot
+sdataA <- subset(sdata, NotAir == 1)
+sdataA$som_codes <- 100
+sdataA$cluster <- length(unique(sdataNA1$cluster))+1
+
+sdata1 <- rbind(sdataNA1[,c('x','y','z','cluster')],sdataA[,c('x','y','z','cluster')])
+nclusters <- length(unique(sdata1$cluster))
+
+p <- plot_ly(sdata1, x = ~x, y = ~y, z = ~z, color = ~cluster, colors = c('blue','yellow','green', 'red', 'grey','orange','black', 'purple', 'skyblue','pink','darkblue', 'aquamarine', 'cornflowerblue')[1:nclusters]) %>% add_markers()%>%layout(title='Run 91/0001 Pred')
+p
+
+## only specific codes                       
+sdata1 <- rbind(sdataNA1[,c('x','y','z','som_codes')],sdataA[,c('x','y','z','som_codes')])
+sdata2 <- sdata1[sdata1$som_codes%in% c(1,2,17),]
+nclusters <- length(unique(sdata2$som_codes))
+p <- plot_ly(sdata2, x = ~x, y = ~y, z = ~z, color = ~som_codes, colors = c('blue','yellow','green', 'red', 'grey','orange','black', 'purple', 'skyblue','pink','darkblue', 'aquamarine', 'cornflowerblue')[1:nclusters]) %>% add_markers()%>%layout(title='Run 64')
+p
+
+
+> summary(pr_DB)
+* Similarity measures:
+Braun-Blanquet, Chi-squared, correlation, cosine, Cramer, Dice, eDice,
+eJaccard, Fager, Faith, Gower, Hamman, Jaccard, Kulczynski1,
+Kulczynski2, Michael, Mountford, Mozley, Ochiai, Pearson, Phi,
+Phi-squared, Russel, simple matching, Simpson, Stiles, Tanimoto,
+Tschuprow, Yule, Yule2
+
+* Distance measures:
+Bhjattacharyya, Bray, Canberra, Chord, divergence, Euclidean, fJaccard,
+Geodesic, Hellinger, Kullback, Levenshtein, Mahalanobis, Manhattan,
+Minkowski, Podani, Soergel, supremum, Wave, Whittaker
+
+############ end
+
+### first round transformations
+summary.by.som_code$FOM.FOMFrac = summary.by.som_code$FOM/(summary.by.som_code$FOMFrac +0.1)
+summary.by.som_code$SmoothedNumPoCAs.box_p50 = summary.by.som_code$SmoothedNumPoCAs/(summary.by.som_code$box_p50 +0.1)
+summary.by.som_code$MeanTheta.ScatteringRatio = summary.by.som_code$MeanTheta/(summary.by.som_code$ScatteringRatio +0.1)
+summary.by.som_code$MuL = log(summary.by.som_code$LogPTheta*summary.by.som_code$Mu)  
+summary.by.som_code$MuL1 = ((summary.by.som_code$sum_max_1_2)*(summary.by.som_code$sum_max_3_5))                        
+
+                       
